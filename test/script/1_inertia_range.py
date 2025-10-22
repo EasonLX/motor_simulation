@@ -1,6 +1,11 @@
 import numpy as np
 import pandas as pd
 import mujoco
+import matplotlib.pyplot as plt
+
+# 设置matplotlib中文字体
+plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'WenQuanYi Micro Hei', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
 
 """
 转动惯量范围计算脚本
@@ -40,11 +45,11 @@ def scan_configurations():
     
     results = []
     
-    # 摆杆长度范围 (m): 0.2m ~ 0.5m
-    arm_lengths = np.linspace(0.2, 0.5, 7)
+    # 摆杆长度范围 (m): 0.1m ~ 0.3m
+    arm_lengths = np.linspace(0.1, 0.3, 5)
     
-    # 重量块质量 (kg): 0 ~ 2kg
-    weight_masses = [0, 0.5, 1.0, 1.5, 2.0]
+    # 重量块质量 (kg): 0 ~ 5kg (根据100Nm峰值扭矩调整)
+    weight_masses = [0, 1.0, 2.0, 3.0, 4.0, 5.0]
     
     # link1固有参数
     link1_mass = 0.5  # kg
@@ -80,10 +85,10 @@ def scan_configurations():
             # 总转动惯量
             total_inertia = link1_inertia_zz + arm_inertia + weight_inertia
             
-            # 负载分级
+            # 负载分级（根据100Nm峰值扭矩重新定义）
             if weight_mass == 0:
                 load_level = "空载"
-            elif weight_mass <= 1.0:
+            elif weight_mass <= 2.0:
                 load_level = "中负载"
             else:
                 load_level = "大负载"
