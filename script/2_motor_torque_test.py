@@ -14,6 +14,7 @@ print(f"关节数量: {model.njnt}")
 print(f"关节名称: {[mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, i) for i in range(model.njnt)]}")
 print(f"执行器数量: {model.nu}")
 print(f"刚体数量: {model.nbody}")
+print(f"刚体名称: {[mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i) for i in range(model.nbody)]}")
 print("=" * 50)
 
 # 使用被动查看器
