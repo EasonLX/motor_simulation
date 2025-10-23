@@ -33,17 +33,18 @@ motor:
 # 控制参数
 control:
   kp: 80.0             # 比例增益
-  kd: 5             # 微分增益
+  kd: 10             # 微分增益
 
 # 测试信号参数 (按readme要求)
 test_signal:
-  duration: 20.0       # 测试时长 (s) - readme要求20s
+  duration: 10.0       # 测试时长 (s) - readme要求20s
   f_start: 0.1         # 起始频率 (Hz) - readme要求0.1Hz
   f_end: 10.0          # 结束频率 (Hz) - readme要求10Hz
   amplitude: 10.0       # 幅值 (度) - readme要求±10度
 
 # 显示参数
 display:
-  window_size: 1000
-  figure_size: [12, 9]
-  plot_update_interval: 50
+  window_size: 1000          # 实时绘图窗口大小（数据点数）- 仅在keep_all_history=false时生效
+  figure_size: [8, 6]        # 图形窗口大小 (宽, 高) 单位:英寸
+  plot_update_interval: 50   # 绘图更新间隔（每N个仿真步更新一次）
+  keep_all_history: true     # true=保留所有历史数据，false=只保留最近window_size个数据点

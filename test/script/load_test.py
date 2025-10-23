@@ -17,7 +17,6 @@ import mujoco.viewer
 import numpy as np
 import time
 import matplotlib.pyplot as plt
-from collections import deque
 import yaml
 import os
 
@@ -171,20 +170,32 @@ class RealtimePlotter:
         """初始化实时绘图器"""
         self.window_size = config['display']['window_size']
         self.figure_size = config['display']['figure_size']
+        self.keep_all_history = config['display'].get('keep_all_history', True)  # 默认保留所有历史
         
-        # 数据缓冲区
-        self.time_buffer = deque(maxlen=self.window_size)
-        self.pos_des_buffer = deque(maxlen=self.window_size)
-        self.pos_act_buffer = deque(maxlen=self.window_size)
-        self.vel_des_buffer = deque(maxlen=self.window_size)
-        self.vel_act_buffer = deque(maxlen=self.window_size)
-        self.torque_cmd_buffer = deque(maxlen=self.window_size)
-        self.torque_frc_buffer = deque(maxlen=self.window_size)  # 执行器实际力矩反馈
+        # 数据缓冲区 - 根据配置选择是否限制长度
+        if self.keep_all_history:
+            # 保留所有历史数据
+            self.time_buffer = []
+            self.pos_des_buffer = []
+            self.pos_act_buffer = []
+            self.vel_des_buffer = []
+            self.vel_act_buffer = []
+            self.torque_cmd_buffer = []
+            self.torque_frc_buffer = []
+        else:
+            # 只保留最近window_size个数据点（使用deque实现滑动窗口）
+            from collections import deque
+            self.time_buffer = deque(maxlen=self.window_size)
+            self.pos_des_buffer = deque(maxlen=self.window_size)
+            self.pos_act_buffer = deque(maxlen=self.window_size)
+            self.vel_des_buffer = deque(maxlen=self.window_size)
+            self.vel_act_buffer = deque(maxlen=self.window_size)
+            self.torque_cmd_buffer = deque(maxlen=self.window_size)
+            self.torque_frc_buffer = deque(maxlen=self.window_size)
         
         # 创建图形
         plt.ion()
         self.fig, self.axes = plt.subplots(3, 1, figsize=self.figure_size)
-        self.fig.suptitle('实时跟踪曲线', fontsize=14, fontweight='bold')
         
         # 位置跟踪子图
         self.ax_pos = self.axes[0]
@@ -248,31 +259,60 @@ class RealtimePlotter:
         1. 更新位置跟踪曲线 (期望位置 vs 实际位置)
         2. 更新速度跟踪曲线 (期望速度 vs 实际速度)  
         3. 更新控制力矩曲线
-        4. 自动调整坐标轴范围
+        4. 根据keep_all_history配置选择显示模式：
+           - True: 固定Y轴范围，X轴显示完整时间范围（保留所有历史波形）
+           - False: 自动调整坐标轴范围（滑动窗口，只显示最近数据）
         5. 刷新图形显示
         """
         if len(self.time_buffer) < 2:  # 数据点不足时不更新
             return
         
         time_array = np.array(self.time_buffer)
+        pos_des_array = np.array(self.pos_des_buffer)
+        pos_act_array = np.array(self.pos_act_buffer)
+        vel_des_array = np.array(self.vel_des_buffer)
+        vel_act_array = np.array(self.vel_act_buffer)
+        torque_cmd_array = np.array(self.torque_cmd_buffer)
+        torque_frc_array = np.array(self.torque_frc_buffer)
         
         # 更新位置跟踪曲线
-        self.line_pos_des.set_data(time_array, np.array(self.pos_des_buffer))
-        self.line_pos_act.set_data(time_array, np.array(self.pos_act_buffer))
-        self.ax_pos.relim()  # 重新计算数据范围
-        self.ax_pos.autoscale_view()  # 自动调整坐标轴
+        self.line_pos_des.set_data(time_array, pos_des_array)
+        self.line_pos_act.set_data(time_array, pos_act_array)
         
         # 更新速度跟踪曲线
-        self.line_vel_des.set_data(time_array, np.array(self.vel_des_buffer))
-        self.line_vel_act.set_data(time_array, np.array(self.vel_act_buffer))
-        self.ax_vel.relim()
-        self.ax_vel.autoscale_view()
+        self.line_vel_des.set_data(time_array, vel_des_array)
+        self.line_vel_act.set_data(time_array, vel_act_array)
         
         # 更新力矩跟踪曲线 (指令 vs 反馈)
-        self.line_torque_cmd.set_data(time_array, np.array(self.torque_cmd_buffer))
-        self.line_torque_frc.set_data(time_array, np.array(self.torque_frc_buffer))
-        self.ax_torque.relim()
-        self.ax_torque.autoscale_view()
+        self.line_torque_cmd.set_data(time_array, torque_cmd_array)
+        self.line_torque_frc.set_data(time_array, torque_frc_array)
+        
+        # 根据配置选择坐标轴更新策略
+        if self.keep_all_history:
+            # 模式1: 保留所有历史数据，固定Y轴范围，X轴显示完整时间
+            pos_max = max(np.max(np.abs(pos_des_array)), np.max(np.abs(pos_act_array)))
+            self.ax_pos.set_xlim(0, max(time_array))
+            self.ax_pos.set_ylim(-pos_max * 1.2, pos_max * 1.2)
+            
+            vel_max = max(np.max(np.abs(vel_des_array)), np.max(np.abs(vel_act_array)))
+            if vel_max > 0:
+                self.ax_vel.set_xlim(0, max(time_array))
+                self.ax_vel.set_ylim(-vel_max * 1.2, vel_max * 1.2)
+            
+            torque_max = max(np.max(np.abs(torque_cmd_array)), np.max(np.abs(torque_frc_array)))
+            if torque_max > 0:
+                self.ax_torque.set_xlim(0, max(time_array))
+                self.ax_torque.set_ylim(-torque_max * 1.2, torque_max * 1.2)
+        else:
+            # 模式2: 滑动窗口，自动调整坐标轴范围
+            self.ax_pos.relim()
+            self.ax_pos.autoscale_view()
+            
+            self.ax_vel.relim()
+            self.ax_vel.autoscale_view()
+            
+            self.ax_torque.relim()
+            self.ax_torque.autoscale_view()
         
         # 刷新图形显示
         self.fig.canvas.draw()
@@ -562,8 +602,9 @@ def main():
     # 保存结果
     import csv
     with open('load_test_results.csv', 'w', newline='', encoding='utf-8-sig') as f:
-        writer = csv.DictWriter(f, fieldnames=['load_mass', 'inertia', 'max_torque', 
-                                               'rms_torque', 'max_pos_error', 'rms_pos_error', 'status'])
+        writer = csv.DictWriter(f, fieldnames=['load_mass', 'inertia', 'max_torque', 'max_torque_frc',
+                                               'rms_torque', 'max_torque_error', 'rms_torque_error',
+                                               'max_pos_error', 'rms_pos_error', 'status'])
         writer.writeheader()
         writer.writerows(results)
     
