@@ -11,6 +11,8 @@
 | `3_quick_test.py` | 快速单配置测试 | 简化版实时显示 |
 | `4_font_check.py` | 字体检查工具 | 解决中文显示问题 |
 | `6_load_inertia_test.py` | **专业测试模板** | 完整测试流程 |
+| `7_verify_inertia.py` | **转动惯量验证** | 理论vs仿真对比 |
+| `inertia_explanation.md` | 概念详解文档 | 区分两种转动惯量 |
 
 ## 参数配置
 
@@ -43,6 +45,30 @@
 - 重量块: 4 kg (末端)
 - 预期转动惯量: ~0.4 kg·m²
 - 预期最大力矩: ~80 Nm
+
+## 重要概念：转动惯量的两种含义
+
+⚠️ **请先阅读 `inertia_explanation.md` 了解关键区别！**
+
+### 系统总转动惯量（给结构的）
+- **定义**：整个系统绕电机轴z的转动惯量
+- **计算**：`I_total = I_link1 + I_arm + I_weight` (使用平行轴定理)
+- **用途**：给结构设计负载参考，估算所需扭矩 `τ = I × α`
+- **输出**：`1_inertia_range.py` 计算的就是这个值
+
+### Body inertial参数（MJCF中的）
+- **定义**：每个body在其质心坐标系下的转动惯量
+- **格式**：`diaginertia="Ixx Iyy Izz"`
+- **用途**：MuJoCo物理引擎建模需要
+- **关系**：MuJoCo根据各body的inertial自动计算系统总转动惯量
+
+### 验证一致性
+```bash
+python script/7_verify_inertia.py
+```
+验证手算的系统总转动惯量与MuJoCo仿真的M(q)矩阵是否一致。
+
+---
 
 ## 使用方法
 

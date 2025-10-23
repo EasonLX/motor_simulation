@@ -1,0 +1,31 @@
+
+<mujoco model="load_test">
+  <option timestep="0.001" gravity="0 0 -9.81"/>
+  
+  <worldbody>
+    <geom name="floor" type="plane" size="2 2 0.1"/>
+    <light directional="true" pos="0 0 3" dir="0 0 -1"/>
+    
+    <body name="base" pos="0 0 0.03">
+      <geom type="cylinder" size="0.075 0.03" rgba="0.3 0.3 0.3 1"/>
+      
+      <body name="link1" pos="0 0 0.07">
+        <joint name="joint1" type="hinge" axis="0 0 1" limited="false" damping="0.1"/>
+        <geom type="cylinder" size="0.015 0.04" rgba="0.6 0.3 0.1 1"/>
+        <inertial pos="0 0 0" mass="0.5" diaginertia="0.001 0.001 0.0001"/>
+        
+        <body name="arm" pos="0.1 0 0.04">
+          <geom type="cylinder" size="0.015 0.1" 
+                quat="0.707107 0 0.707107 0" rgba="0.1 0.5 0.8 1"/>
+          <inertial pos="0 0 0" mass="1.1097676048805944" 
+                    diaginertia="0.00376165 0.00376165 0.00012485"/>
+          
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  
+  <actuator>
+    <motor name="motor1" joint="joint1" gear="1" ctrllimited="true" ctrlrange="-100 100"/>
+  </actuator>
+</mujoco>

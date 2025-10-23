@@ -1,0 +1,552 @@
+#!/usr/bin/env python3
+"""
+摆杆负载测试 - 验证电机驱动能力
+核心目标：确认电机能否稳定驱动不同负载的摆杆完成位置跟踪任务
+
+功能说明：
+1. 动态生成不同负载配置的MuJoCo模型
+2. 使用Chirp扫频信号测试位置跟踪性能
+3. 实时显示位置、速度、力矩跟踪波形
+4. 分析电机扭矩利用率，确定最大安全负载
+5. 生成结构设计部门参考报告
+
+"""
+
+import mujoco
+import mujoco.viewer
+import numpy as np
+import time
+import matplotlib.pyplot as plt
+from collections import deque
+import yaml
+import os
+
+# 设置中文字体支持
+plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'WenQuanYi Micro Hei', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
+
+def load_config():
+    """
+    加载配置文件
+    
+    Returns:
+        dict: 包含所有仿真参数的配置字典
+    """
+    config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'test_params.yaml')
+    with open(config_path, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f)
+
+# 加载配置文件
+config = load_config()
+
+# ==================== 全局配置参数 ====================
+# 摆杆物理参数
+ARM_LENGTH = config['arm']['length']        # 摆杆长度 (m)
+ARM_DIAMETER = config['arm']['diameter']   # 摆杆直径 (m)
+ARM_DENSITY = config['arm']['density']      # 摆杆材质密度 (kg/m³)
+
+# 负载测试范围（包含0kg空载情况）
+LOAD_MASSES = [0] + config['load_masses']   # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] kg
+
+# 电机性能参数
+MOTOR_MAX_TORQUE = config['motor']['max_torque']  # 电机最大扭矩 (Nm)
+
+# PD控制器参数
+KP = config['control']['kp']  # 比例增益
+KD = config['control']['kd']  # 微分增益
+
+# 测试信号参数 (按readme要求: Chirp 0.1Hz-10Hz, ±10°, 20s)
+TEST_DURATION = config['test_signal']['duration']      # 测试持续时间 (s)
+CHIRP_F_START = config['test_signal']['f_start']       # 起始频率 (Hz)
+CHIRP_F_END = config['test_signal']['f_end']           # 结束频率 (Hz)
+CHIRP_AMPLITUDE = config['test_signal']['amplitude']    # 信号幅值 (度)
+
+# 实时绘图参数
+PLOT_UPDATE_INTERVAL = config['display']['plot_update_interval']  # 绘图更新间隔
+# =================================================
+
+
+def calculate_arm_mass(length, diameter, density):
+    """
+    计算摆杆质量
+    
+    Args:
+        length (float): 摆杆长度 (m)
+        diameter (float): 摆杆直径 (m) 
+        density (float): 材质密度 (kg/m³)
+        
+    Returns:
+        float: 摆杆质量 (kg)
+    """
+    radius = diameter / 2
+    volume = np.pi * radius**2 * length  # 圆柱体体积公式
+    mass = volume * density
+    return mass
+
+
+def create_model_xml(arm_length, arm_mass, load_mass):
+    """
+    创建MuJoCo模型XML字符串
+    
+    Args:
+        arm_length (float): 摆杆长度 (m)
+        arm_mass (float): 摆杆质量 (kg)
+        load_mass (float): 负载质量 (kg)
+        
+    Returns:
+        str: MuJoCo模型XML字符串
+    """
+    
+    radius = ARM_DIAMETER / 2
+    
+    # 计算摆杆转动惯量（圆柱体，质心坐标系）
+    # I_xx = I_yy: 绕x/y轴转动惯量（包含长度和半径项）
+    I_xx = (1/12) * arm_mass * arm_length**2 + (1/4) * arm_mass * radius**2
+    I_yy = I_xx  # 圆柱体对称性
+    I_zz = 0.5 * arm_mass * radius**2  # 绕z轴转动惯量（仅半径项）
+    
+    # 负载部分（只有当load_mass > 0时才添加）
+    load_body = ""
+    if load_mass > 0:
+        load_radius = 0.04  # 负载球体半径 (m)
+        I_load = (2/5) * load_mass * load_radius**2  # 球体转动惯量
+        load_body = f'''
+          <body name="load" pos="{arm_length/2} 0 0">
+            <geom type="sphere" size="{load_radius}" rgba="0.8 0.1 0.1 1"/>
+            <inertial pos="0 0 0" mass="{load_mass}" 
+                      diaginertia="{I_load:.8f} {I_load:.8f} {I_load:.8f}"/>
+          </body>'''
+    
+    xml = f"""
+<mujoco model="load_test">
+  <option timestep="0.001" gravity="0 0 -9.81"/>
+  
+  <worldbody>
+    <geom name="floor" type="plane" size="2 2 0.1"/>
+    <light directional="true" pos="0 0 3" dir="0 0 -1"/>
+    
+    <body name="base" pos="0 0 0.03">
+      <geom type="cylinder" size="0.075 0.03" rgba="0.3 0.3 0.3 1"/>
+      
+      <body name="link1" pos="0 0 0.07">
+        <joint name="joint1" type="hinge" axis="0 0 1" limited="false" damping="0.1"/>
+        <geom type="cylinder" size="0.015 0.04" rgba="0.6 0.3 0.1 1"/>
+        <inertial pos="0 0 0" mass="0.5" diaginertia="0.001 0.001 0.0001"/>
+        
+        <body name="arm" pos="{arm_length/2} 0 0.04">
+          <geom type="cylinder" size="{radius} {arm_length/2}" 
+                quat="0.707107 0 0.707107 0" rgba="0.1 0.5 0.8 1"/>
+          <inertial pos="0 0 0" mass="{arm_mass}" 
+                    diaginertia="{I_xx:.8f} {I_yy:.8f} {I_zz:.8f}"/>
+          {load_body}
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  
+  <actuator>
+    <motor name="motor1" joint="joint1" gear="1" ctrllimited="true" ctrlrange="-{MOTOR_MAX_TORQUE} {MOTOR_MAX_TORQUE}"/>
+  </actuator>
+</mujoco>
+"""
+    return xml
+
+
+def chirp_signal(t, f_start, f_end, duration, amplitude_deg):
+    """Chirp扫频信号"""
+    k = (f_end - f_start) / duration
+    phase = 2 * np.pi * (f_start * t + 0.5 * k * t**2)
+    return np.deg2rad(amplitude_deg) * np.sin(phase)
+
+
+class RealtimePlotter:
+    """实时绘制跟踪曲线"""
+    
+    def __init__(self, config):
+        """初始化实时绘图器"""
+        self.window_size = config['display']['window_size']
+        self.figure_size = config['display']['figure_size']
+        
+        # 数据缓冲区
+        self.time_buffer = deque(maxlen=self.window_size)
+        self.pos_des_buffer = deque(maxlen=self.window_size)
+        self.pos_act_buffer = deque(maxlen=self.window_size)
+        self.vel_des_buffer = deque(maxlen=self.window_size)
+        self.vel_act_buffer = deque(maxlen=self.window_size)
+        self.torque_cmd_buffer = deque(maxlen=self.window_size)
+        
+        # 创建图形
+        plt.ion()
+        self.fig, self.axes = plt.subplots(3, 1, figsize=self.figure_size)
+        self.fig.suptitle('实时跟踪曲线', fontsize=14, fontweight='bold')
+        
+        # 位置跟踪子图
+        self.ax_pos = self.axes[0]
+        self.line_pos_des, = self.ax_pos.plot([], [], 'r-', label='期望位置', linewidth=2)
+        self.line_pos_act, = self.ax_pos.plot([], [], 'b-', label='实际位置', linewidth=1.5)
+        self.ax_pos.set_ylabel('位置 (rad)', fontsize=11)
+        self.ax_pos.legend(loc='upper right')
+        self.ax_pos.grid(True, alpha=0.3)
+        self.ax_pos.set_title('位置跟踪')
+        
+        # 速度跟踪子图
+        self.ax_vel = self.axes[1]
+        self.line_vel_des, = self.ax_vel.plot([], [], 'r-', label='期望速度', linewidth=2)
+        self.line_vel_act, = self.ax_vel.plot([], [], 'g-', label='实际速度', linewidth=1.5)
+        self.ax_vel.set_ylabel('速度 (rad/s)', fontsize=11)
+        self.ax_vel.legend(loc='upper right')
+        self.ax_vel.grid(True, alpha=0.3)
+        self.ax_vel.set_title('速度跟踪')
+        
+        # 力矩子图
+        self.ax_torque = self.axes[2]
+        self.line_torque, = self.ax_torque.plot([], [], 'm-', label='控制力矩', linewidth=1.5)
+        self.ax_torque.set_xlabel('时间 (s)', fontsize=11)
+        self.ax_torque.set_ylabel('力矩 (Nm)', fontsize=11)
+        self.ax_torque.legend(loc='upper right')
+        self.ax_torque.grid(True, alpha=0.3)
+        self.ax_torque.set_title('控制力矩')
+        
+        plt.tight_layout()
+        plt.show(block=False)
+        
+        self.running = True
+    
+    def update_data(self, time_val, pos_des, pos_act, vel_des, vel_act, torque_cmd):
+        """
+        更新数据缓冲区
+        
+        Args:
+            time_val (float): 当前仿真时间 (s)
+            pos_des (float): 期望位置 (rad)
+            pos_act (float): 实际位置 (rad)
+            vel_des (float): 期望速度 (rad/s)
+            vel_act (float): 实际速度 (rad/s)
+            torque_cmd (float): 控制力矩指令 (Nm)
+        """
+        self.time_buffer.append(time_val)
+        self.pos_des_buffer.append(pos_des)
+        self.pos_act_buffer.append(pos_act)
+        self.vel_des_buffer.append(vel_des)
+        self.vel_act_buffer.append(vel_act)
+        self.torque_cmd_buffer.append(torque_cmd)
+    
+    def update_plot(self):
+        """
+        更新图形显示
+        
+        功能:
+        1. 更新位置跟踪曲线 (期望位置 vs 实际位置)
+        2. 更新速度跟踪曲线 (期望速度 vs 实际速度)  
+        3. 更新控制力矩曲线
+        4. 自动调整坐标轴范围
+        5. 刷新图形显示
+        """
+        if len(self.time_buffer) < 2:  # 数据点不足时不更新
+            return
+        
+        time_array = np.array(self.time_buffer)
+        
+        # 更新位置跟踪曲线
+        self.line_pos_des.set_data(time_array, np.array(self.pos_des_buffer))
+        self.line_pos_act.set_data(time_array, np.array(self.pos_act_buffer))
+        self.ax_pos.relim()  # 重新计算数据范围
+        self.ax_pos.autoscale_view()  # 自动调整坐标轴
+        
+        # 更新速度跟踪曲线
+        self.line_vel_des.set_data(time_array, np.array(self.vel_des_buffer))
+        self.line_vel_act.set_data(time_array, np.array(self.vel_act_buffer))
+        self.ax_vel.relim()
+        self.ax_vel.autoscale_view()
+        
+        # 更新控制力矩曲线
+        self.line_torque.set_data(time_array, np.array(self.torque_cmd_buffer))
+        self.ax_torque.relim()
+        self.ax_torque.autoscale_view()
+        
+        # 刷新图形显示
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
+    
+    def close(self):
+        """关闭绘图窗口"""
+        self.running = False
+        plt.ioff()
+        plt.close(self.fig)
+
+
+def run_load_test(arm_mass, load_mass, show_plot=True):
+    """运行单次负载测试（带实时波形显示）"""
+    
+    print(f"\n{'='*70}")
+    if load_mass == 0:
+        print(f"负载测试: 空载（仅摆杆）")
+    else:
+        print(f"负载测试: {load_mass} kg")
+    print(f"{'='*70}")
+    
+    # 创建模型
+    xml_string = create_model_xml(ARM_LENGTH, arm_mass, load_mass)
+    
+    # 保存XML文件到mjcf目录
+    xml_filename = f'load_test_{load_mass}kg.xml' if load_mass > 0 else 'load_test_0kg_empty.xml'
+    xml_path = os.path.join(os.path.dirname(__file__), '..', 'mjcf', xml_filename)
+    with open(xml_path, 'w', encoding='utf-8') as f:
+        f.write(xml_string)
+    print(f"模型XML已保存至: mjcf/{xml_filename}")
+    
+    model = mujoco.MjModel.from_xml_string(xml_string)
+    data = mujoco.MjData(model)
+    
+    # 获取MuJoCo计算的转动惯量
+    data.qpos[0] = 0
+    data.qvel[0] = 0
+    data.qacc[0] = 0
+    mujoco.mj_forward(model, data)
+    
+    M = np.zeros((model.nv, model.nv))
+    mujoco.mj_fullM(model, M, data.qM)
+    inertia = M[0, 0]
+    
+    print(f"摆杆质量: {arm_mass:.3f} kg")
+    print(f"负载质量: {load_mass} kg")
+    print(f"系统转动惯量: {inertia:.6f} kg·m²")
+    print(f"{'='*70}\n")
+    
+    # 创建实时绘图器
+    plotter = None
+    if show_plot:
+        plotter = RealtimePlotter(config)
+    
+    # 记录数据
+    time_data = []
+    pos_des_data = []
+    pos_act_data = []
+    vel_des_data = []
+    vel_act_data = []
+    torque_data = []
+    
+    # 运行仿真
+    with mujoco.viewer.launch_passive(model, data) as viewer:
+        viewer.cam.azimuth = 45
+        viewer.cam.elevation = -20
+        viewer.cam.distance = 0.8  # 从1.5调整到0.8，让模型更近更大
+        viewer.cam.lookat = np.array([0.0, 0.0, 0.2])
+        
+        plot_update_counter = 0
+        
+        while viewer.is_running() and data.time < TEST_DURATION:
+            if plotter and not plotter.running:
+                break
+                
+            step_start = time.time()
+            
+            t = data.time
+            
+            # Chirp信号 (按readme要求: 0.1Hz-10Hz, ±10°, 20s)
+            pos_des = chirp_signal(t, CHIRP_F_START, CHIRP_F_END, TEST_DURATION, CHIRP_AMPLITUDE)
+            
+            # 期望速度指令为0 (按readme要求)
+            vel_des = 0.0
+            
+            # PD控制：转换为期望力矩 (标准公式)
+            # 标准PD控制公式: torques = p_gains * (actions - dof_pos) - d_gains * dof_vel
+            # 其中: actions=期望位置, dof_pos=实际位置, dof_vel=实际速度
+            pos_error = pos_des - data.qpos[0]  # 位置误差
+            vel_error = vel_des - data.qvel[0]  # 速度误差 (期望速度为0)
+            torque = KP * pos_error - KD * vel_error  # PD控制输出
+            torque = np.clip(torque, -MOTOR_MAX_TORQUE, MOTOR_MAX_TORQUE)  # 限制在电机扭矩范围内
+            
+            data.ctrl[0] = torque
+            
+            # 记录数据
+            time_data.append(t)
+            pos_des_data.append(pos_des)
+            pos_act_data.append(data.qpos[0])
+            vel_des_data.append(vel_des)
+            vel_act_data.append(data.qvel[0])
+            torque_data.append(torque)
+            
+            # 更新实时绘图
+            if plotter:
+                plotter.update_data(t, pos_des, data.qpos[0], vel_des, data.qvel[0], torque)
+                plot_update_counter += 1
+                if plot_update_counter >= PLOT_UPDATE_INTERVAL:
+                    plotter.update_plot()
+                    plot_update_counter = 0
+            
+            mujoco.mj_step(model, data)
+            viewer.sync()
+            
+            time_until_next = model.opt.timestep - (time.time() - step_start)
+            if time_until_next > 0:
+                time.sleep(time_until_next)
+    
+    # 最后更新一次图形
+    if plotter:
+        plotter.update_plot()
+    
+    # ========== 测试结果分析 ==========
+    # 计算跟踪误差
+    pos_error_array = np.array(pos_des_data) - np.array(pos_act_data)  # 位置跟踪误差
+    vel_error_array = np.array(vel_des_data) - np.array(vel_act_data)  # 速度跟踪误差
+    torque_array = np.array(torque_data)  # 控制力矩数组
+    
+    # 计算关键性能指标
+    max_torque = np.max(np.abs(torque_array))  # 最大控制力矩
+    rms_torque = np.sqrt(np.mean(torque_array**2))  # RMS控制力矩
+    max_pos_error = np.max(np.abs(pos_error_array))  # 最大位置误差
+    rms_pos_error = np.sqrt(np.mean(pos_error_array**2))  # RMS位置误差
+    
+    print(f"\n测试结果:")
+    print(f"{'='*50}")
+    print(f"位置跟踪:")
+    print(f"  RMS误差: {np.sqrt(np.mean(pos_error_array**2)):.6f} rad ({np.rad2deg(np.sqrt(np.mean(pos_error_array**2))):.3f}°)")
+    print(f"  最大误差: {max_pos_error:.6f} rad ({np.rad2deg(max_pos_error):.3f}°)")
+    
+    print(f"\n速度跟踪:")
+    print(f"  RMS误差: {np.sqrt(np.mean(vel_error_array**2)):.6f} rad/s")
+    print(f"  最大速度: {np.max(np.abs(vel_act_data)):.3f} rad/s")
+    
+    print(f"\n控制力矩:")
+    print(f"  最大力矩: {max_torque:.2f} Nm")
+    print(f"  平均力矩: {np.mean(np.abs(torque_array)):.2f} Nm")
+    print(f"  RMS力矩: {rms_torque:.2f} Nm")
+    print(f"  扭矩利用率: {max_torque/MOTOR_MAX_TORQUE*100:.1f}%")
+    
+    # ========== 电机驱动能力评估 ==========
+    # 根据最大控制力矩判断电机是否能稳定驱动负载
+    if max_torque < MOTOR_MAX_TORQUE * 0.9:  # 扭矩利用率 < 90%
+        print(f"  ✓ 电机能稳定驱动 (扭矩裕度: {(1-max_torque/MOTOR_MAX_TORQUE)*100:.1f}%)")
+        status = "OK"  # 安全状态
+    elif max_torque < MOTOR_MAX_TORQUE:  # 90% ≤ 扭矩利用率 < 100%
+        print(f"  ⚠️ 接近极限 (扭矩裕度: {(1-max_torque/MOTOR_MAX_TORQUE)*100:.1f}%)")
+        status = "MARGINAL"  # 临界状态
+    else:  # 扭矩利用率 ≥ 100%
+        print(f"  ✗ 超出电机能力！")
+        status = "FAIL"  # 失败状态
+    
+    print(f"{'='*50}\n")
+    
+    # 等待用户查看图形
+    if plotter:
+        input("按Enter键关闭波形图并继续...")
+        plotter.close()
+    
+    return {
+        'load_mass': load_mass,
+        'inertia': inertia,
+        'max_torque': max_torque,
+        'rms_torque': rms_torque,
+        'max_pos_error': max_pos_error,
+        'rms_pos_error': rms_pos_error,
+        'status': status
+    }
+
+
+def main():
+    """
+    主函数 - 摆杆负载测试程序入口
+    
+    功能流程:
+    1. 显示测试参数配置
+    2. 依次测试不同负载配置 (0~10kg)
+    3. 实时显示跟踪波形
+    4. 分析电机驱动能力
+    5. 生成结构设计参考报告
+    6. 保存测试结果到CSV文件
+    """
+    
+    print("="*70)
+    print("摆杆负载测试 - 验证电机驱动能力")
+    print("="*70)
+    print(f"摆杆参数:")
+    print(f"  长度: {ARM_LENGTH} m")
+    print(f"  直径: {ARM_DIAMETER} m (半径: {ARM_DIAMETER/2} m)")
+    print(f"  材质: 钢 (密度: {ARM_DENSITY} kg/m³)")
+    
+    # 计算摆杆质量
+    arm_mass = calculate_arm_mass(ARM_LENGTH, ARM_DIAMETER, ARM_DENSITY)
+    print(f"  质量: {arm_mass:.3f} kg")
+    
+    print(f"\n电机参数:")
+    print(f"  最大扭矩: {MOTOR_MAX_TORQUE} Nm")
+    
+    print(f"\n控制参数:")
+    print(f"  Kp: {KP}, Kd: {KD}")
+    
+    print(f"\n测试信号 (按readme要求):")
+    print(f"  Chirp {CHIRP_F_START}~{CHIRP_F_END} Hz, 幅值±{CHIRP_AMPLITUDE}°")
+    print(f"  持续时间: {TEST_DURATION} 秒")
+    print(f"  信号类型: 扫频信号 (0.1Hz→10Hz, 20秒)")
+    
+    print(f"\n负载范围: {LOAD_MASSES[0]}~{LOAD_MASSES[-1]} kg (包含0kg空载)")
+    print("="*70)
+    
+    # 运行测试
+    results = []
+    for load_mass in LOAD_MASSES:
+        if load_mass == 0:
+            input(f"\n按Enter开始测试 空载（仅摆杆）...")
+        else:
+            input(f"\n按Enter开始测试 {load_mass}kg 负载...")
+        result = run_load_test(arm_mass, load_mass, show_plot=True)
+        results.append(result)
+    
+    # 生成汇总报告
+    print(f"\n{'='*90}")
+    print("测试汇总报告 - 给结构设计部门参考")
+    print(f"{'='*90}")
+    print(f"{'负载(kg)':<10} {'转动惯量(kg·m²)':<18} {'最大扭矩(Nm)':<15} {'扭矩利用率':<12} {'状态':<10}")
+    print(f"{'-'*90}")
+    
+    for result in results:
+        status_symbol = {
+            'OK': '✓ 正常',
+            'MARGINAL': '⚠️ 接近极限',
+            'FAIL': '✗ 超限'
+        }[result['status']]
+        
+        load_str = "空载" if result['load_mass'] == 0 else str(result['load_mass'])
+        
+        print(f"{load_str:<10} "
+              f"{result['inertia']:<18.6f} "
+              f"{result['max_torque']:<15.2f} "
+              f"{result['max_torque']/MOTOR_MAX_TORQUE*100:<12.1f}% "
+              f"{status_symbol:<10}")
+    
+    # 确定最大可用负载
+    ok_results = [r for r in results if r['status'] == 'OK']
+    if ok_results:
+        max_safe_load = max([r['load_mass'] for r in ok_results])
+        min_inertia = min([r['inertia'] for r in ok_results])
+        max_inertia = max([r['inertia'] for r in ok_results])
+        
+        print(f"\n{'='*90}")
+        print(f"结论:")
+        print(f"  电机最大稳定驱动负载: {max_safe_load} kg")
+        print(f"  对应转动惯量: {[r['inertia'] for r in results if r['load_mass']==max_safe_load][0]:.6f} kg·m²")
+        print(f"  对应最大扭矩: {[r['max_torque'] for r in results if r['load_mass']==max_safe_load][0]:.2f} Nm")
+        print(f"\n  推荐工装设计负载范围: 0~{max_safe_load} kg (包含空载)")
+        print(f"  对应转动惯量范围: {min_inertia:.6f} ~ {max_inertia:.6f} kg·m²")
+        print(f"{'='*90}")
+    else:
+        print(f"\n⚠️ 警告: 所有负载都超出电机能力！")
+    
+    # 保存结果
+    import csv
+    with open('load_test_results.csv', 'w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.DictWriter(f, fieldnames=['load_mass', 'inertia', 'max_torque', 
+                                               'rms_torque', 'max_pos_error', 'rms_pos_error', 'status'])
+        writer.writeheader()
+        writer.writerows(results)
+    
+    print(f"\n详细结果已保存至: load_test_results.csv")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n测试已中断")
+

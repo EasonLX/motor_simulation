@@ -1,0 +1,33 @@
+# 测试参数配置文件
+# 根据readme.md中的要求设置
+
+# 摆杆参数
+arm:
+  length: 0.2          # 杆长 (m)
+  diameter: 0.03       # 直径 (m) 
+  density: 7850        # 钢的密度 (kg/m³)
+
+# 负载测试范围
+load_masses: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]  # kg
+
+# 电机参数
+motor:
+  max_torque: 100      # 最大扭矩 (Nm)
+
+# 控制参数
+control:
+  kp: 250.0             # 比例增益
+  kd: 10.0             # 微分增益
+
+# 测试信号参数 (按readme要求)
+test_signal:
+  duration: 20.0       # 测试时长 (s) - readme要求20s
+  f_start: 0.1         # 起始频率 (Hz) - readme要求0.1Hz
+  f_end: 10.0          # 结束频率 (Hz) - readme要求10Hz
+  amplitude: 10.0       # 幅值 (度) - readme要求±10度
+
+# 显示参数
+display:
+  window_size: 1000
+  figure_size: [12, 9]
+  plot_update_interval: 50

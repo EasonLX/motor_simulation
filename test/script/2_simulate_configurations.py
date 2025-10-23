@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from collections import deque
 import threading
+import yaml
+import os
 
 # 设置matplotlib中文字体
 plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'WenQuanYi Micro Hei', 'DejaVu Sans']
@@ -17,7 +19,20 @@ plt.rcParams['axes.unicode_minus'] = False
 实时显示力矩/位置/速度跟踪波形
 """
 
-def create_model_xml(arm_length, arm_mass, weight_mass, weight_position):
+def load_config(config_path="config.yaml"):
+    """加载YAML配置文件"""
+    # 获取脚本的绝对路径
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    
+    if not os.path.exists(config_path):
+        # 如果当前目录没有，尝试项目根目录的config子目录
+        config_path = os.path.join(project_root, "config", "config.yaml")
+    
+    with open(config_path, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f)
+
+def create_model_xml(arm_length, arm_mass, weight_mass, weight_position, config):
     """
     动态生成MJCF模型
     
@@ -26,10 +41,16 @@ def create_model_xml(arm_length, arm_mass, weight_mass, weight_position):
     - arm_mass: 摆杆质量 (kg)
     - weight_mass: 重量块质量 (kg)
     - weight_position: 重量块位置 (m，沿摆杆方向)
+    - config: 配置字典
     """
     
+    # 从配置获取参数
+    radius = config['material']['arm_radius']
+    timestep = config['simulation']['timestep']
+    gravity = config['simulation']['gravity']
+    torque_limit = config['control']['torque_limit']
+    
     # 计算link2的转动惯量（圆柱体）
-    radius = 0.015
     # 圆柱体绕中心轴: I_zz = 0.5 * m * r^2
     # 圆柱体绕垂直轴: I_xx = I_yy = (1/12) * m * L^2 + (1/4) * m * r^2
     I_xx = (1/12) * arm_mass * arm_length**2 + (1/4) * arm_mass * radius**2
@@ -38,7 +59,7 @@ def create_model_xml(arm_length, arm_mass, weight_mass, weight_position):
     
     xml = f"""
 <mujoco model="single_arm_test">
-  <option timestep="0.001" gravity="0 0 -9.81"/>
+  <option timestep="{timestep}" gravity="{gravity[0]} {gravity[1]} {gravity[2]}"/>
   
   <asset>
     <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4"/>
@@ -82,7 +103,7 @@ def create_model_xml(arm_length, arm_mass, weight_mass, weight_position):
   </worldbody>
   
   <actuator>
-    <motor name="motor1" joint="joint1" gear="1" ctrllimited="true" ctrlrange="-100 100"/>
+    <motor name="motor1" joint="joint1" gear="1" ctrllimited="true" ctrlrange="-{torque_limit} {torque_limit}"/>
   </actuator>
   
 </mujoco>
@@ -93,32 +114,33 @@ def chirp_signal(t, f_start, f_end, duration, amplitude):
     """生成Chirp扫频信号"""
     k = (f_end - f_start) / duration
     phase = 2 * np.pi * (f_start * t + 0.5 * k * t**2)
-    return amplitude * np.sin(phase)
+    return np.deg2rad(amplitude) * np.sin(phase)  # 转换为弧度
 
 
 class RealtimePlotter:
     """实时绘制跟踪曲线"""
     
-    def __init__(self, window_size=500):
+    def __init__(self, config):
         """
         初始化实时绘图器
         
         Parameters:
-        - window_size: 显示的数据点数量
+        - config: 配置字典
         """
-        self.window_size = window_size
+        self.window_size = config['display']['window_size']
+        self.figure_size = config['display']['figure_size']
         
         # 数据缓冲区
-        self.time_buffer = deque(maxlen=window_size)
-        self.pos_des_buffer = deque(maxlen=window_size)
-        self.pos_act_buffer = deque(maxlen=window_size)
-        self.vel_des_buffer = deque(maxlen=window_size)
-        self.vel_act_buffer = deque(maxlen=window_size)
-        self.torque_cmd_buffer = deque(maxlen=window_size)
+        self.time_buffer = deque(maxlen=self.window_size)
+        self.pos_des_buffer = deque(maxlen=self.window_size)
+        self.pos_act_buffer = deque(maxlen=self.window_size)
+        self.vel_des_buffer = deque(maxlen=self.window_size)
+        self.vel_act_buffer = deque(maxlen=self.window_size)
+        self.torque_cmd_buffer = deque(maxlen=self.window_size)
         
         # 创建图形
         plt.ion()
-        self.fig, self.axes = plt.subplots(3, 1, figsize=(12, 9))
+        self.fig, self.axes = plt.subplots(3, 1, figsize=self.figure_size)
         self.fig.suptitle('实时跟踪曲线', fontsize=14, fontweight='bold')
         
         # 位置跟踪子图
@@ -195,7 +217,7 @@ class RealtimePlotter:
         plt.ioff()
         plt.close(self.fig)
 
-def run_test(arm_length, arm_mass, weight_mass, weight_position, test_name):
+def run_test(arm_length, arm_mass, weight_mass, weight_position, test_name, config):
     """运行单次仿真测试（带实时波形显示）"""
     print(f"\n{'='*60}")
     print(f"测试配置: {test_name}")
@@ -205,22 +227,45 @@ def run_test(arm_length, arm_mass, weight_mass, weight_position, test_name):
     print(f"重量块质量: {weight_mass:.1f} kg")
     print(f"重量块位置: {weight_position:.3f} m")
     
+    # 从配置获取控制参数
+    kp = config['control']['kp']
+    kd = config['control']['kd']
+    torque_limit = config['control']['torque_limit']
+    
+    print(f"控制参数: Kp={kp}, Kd={kd}")
+    print(f"力矩限制: ±{torque_limit} Nm")
+    
     # 计算理论转动惯量
     arm_center = arm_length / 2
     I_link1 = 0.0001
     I_arm = (1/12) * arm_mass * arm_length**2 + arm_mass * arm_center**2
     I_weight = weight_mass * weight_position**2 if weight_mass > 0 else 0
-    I_total = I_link1 + I_arm + I_weight
-    print(f"理论转动惯量: {I_total:.6f} kg·m²")
+    I_total_theoretical = I_link1 + I_arm + I_weight
+    print(f"理论转动惯量: {I_total_theoretical:.6f} kg·m²")
     print(f"{'='*60}\n")
     
     # 创建模型
-    xml_string = create_model_xml(arm_length, arm_mass, weight_mass, weight_position)
+    xml_string = create_model_xml(arm_length, arm_mass, weight_mass, weight_position, config)
     model = mujoco.MjModel.from_xml_string(xml_string)
     data = mujoco.MjData(model)
     
+    # 获取MuJoCo计算的转动惯量
+    data.qpos[0] = 0  # 设置初始位置
+    data.qvel[0] = 0
+    data.qacc[0] = 0
+    mujoco.mj_forward(model, data)
+    
+    # 计算质量矩阵M(q)
+    M = np.zeros((model.nv, model.nv))
+    mujoco.mj_fullM(model, M, data.qM)
+    I_total_mujoco = M[0, 0]
+    
+    print(f"MuJoCo转动惯量: {I_total_mujoco:.6f} kg·m²")
+    print(f"计算误差: {abs(I_total_mujoco - I_total_theoretical)/I_total_theoretical*100:.2f}%")
+    print(f"{'='*60}\n")
+    
     # 创建实时绘图器
-    plotter = RealtimePlotter(window_size=1000)
+    plotter = RealtimePlotter(config)
     
     # 记录数据
     time_data = []
@@ -230,6 +275,13 @@ def run_test(arm_length, arm_mass, weight_mass, weight_position, test_name):
     vel_data = []
     torque_data = []
     
+    # 从配置获取测试参数
+    test_duration = config['test_signal']['duration']
+    f_start = config['test_signal']['f_start']
+    f_end = config['test_signal']['f_end']
+    amplitude = config['test_signal']['amplitude']
+    plot_update_interval = config['display']['plot_update_interval']
+    
     # 运行仿真
     with mujoco.viewer.launch_passive(model, data) as viewer:
         viewer.cam.azimuth = 45
@@ -237,16 +289,14 @@ def run_test(arm_length, arm_mass, weight_mass, weight_position, test_name):
         viewer.cam.distance = 1.5
         viewer.cam.lookat = np.array([0.0, 0.0, 0.2])
         
-        test_duration = 10.0  # 秒
         plot_update_counter = 0
-        plot_update_interval = 50  # 每50步更新一次图形（减少绘图频率）
         
         while viewer.is_running() and data.time < test_duration and plotter.running:
             step_start = time.time()
             
-            # Chirp信号: 0.1Hz ~ 5Hz
+            # Chirp信号 (按readme要求: 0.1Hz-10Hz, ±10°, 20s)
             current_time = data.time
-            desired_pos = chirp_signal(current_time, 0.1, 5.0, test_duration, np.deg2rad(10))
+            desired_pos = chirp_signal(current_time, f_start, f_end, test_duration, amplitude)
             
             # 计算期望速度（数值微分）
             dt = model.opt.timestep
@@ -256,12 +306,10 @@ def run_test(arm_length, arm_mass, weight_mass, weight_position, test_name):
                 desired_vel = 0.0
             
             # PD控制
-            kp = 80.0
-            kd = 5.0
             pos_error = desired_pos - data.qpos[0]
             vel_error = desired_vel - data.qvel[0]
             torque = kp * pos_error + kd * vel_error
-            torque = np.clip(torque, -100, 100)
+            torque = np.clip(torque, -torque_limit, torque_limit)
             
             data.ctrl[0] = torque
             
@@ -318,57 +366,36 @@ def run_test(arm_length, arm_mass, weight_mass, weight_position, test_name):
         'position': np.array(pos_data),
         'velocity': np.array(vel_data),
         'torque': np.array(torque_data),
-        'inertia': I_total
+        'inertia_theoretical': I_total_theoretical,
+        'inertia_mujoco': I_total_mujoco
     }
 
 def main():
     """主函数：测试三种配置"""
     
-    ARM_RADIUS = 0.015
-    DENSITY_ALUMINUM = 2700
+    # 加载配置
+    config = load_config()
     
-    # 配置1: 空载 (0.2m摆杆)
-    arm_length_1 = 0.2
-    arm_volume_1 = np.pi * ARM_RADIUS**2 * arm_length_1
-    arm_mass_1 = arm_volume_1 * DENSITY_ALUMINUM
-    config_1 = {
-        'arm_length': arm_length_1,
-        'arm_mass': arm_mass_1,
-        'weight_mass': 0.0,
-        'weight_position': arm_length_1,
-        'name': '空载配置'
-    }
+    # 从配置获取材料参数
+    arm_radius = config['material']['arm_radius']
+    density_aluminum = config['material']['density_aluminum']
     
-    # 配置2: 中负载 (0.25m摆杆 + 2kg重量)
-    arm_length_2 = 0.25
-    arm_volume_2 = np.pi * ARM_RADIUS**2 * arm_length_2
-    arm_mass_2 = arm_volume_2 * DENSITY_ALUMINUM
-    config_2 = {
-        'arm_length': arm_length_2,
-        'arm_mass': arm_mass_2,
-        'weight_mass': 2.0,
-        'weight_position': arm_length_2,
-        'name': '中负载配置'
-    }
+    # 从配置获取测试配置
+    test_configs = config['test_configs']
     
-    # 配置3: 大负载 (0.3m摆杆 + 4kg重量)
-    arm_length_3 = 0.3
-    arm_volume_3 = np.pi * ARM_RADIUS**2 * arm_length_3
-    arm_mass_3 = arm_volume_3 * DENSITY_ALUMINUM
-    config_3 = {
-        'arm_length': arm_length_3,
-        'arm_mass': arm_mass_3,
-        'weight_mass': 4.0,
-        'weight_position': arm_length_3,
-        'name': '大负载配置'
-    }
+    # 计算每个配置的摆杆质量
+    for test_config in test_configs:
+        arm_length = test_config['arm_length']
+        arm_volume = np.pi * arm_radius**2 * arm_length
+        test_config['arm_mass'] = arm_volume * density_aluminum
     
     print("\n" + "="*60)
     print("MuJoCo仿真测试 - 不同惯量配置验证（带实时波形显示）")
     print("="*60)
-    print("将依次测试三种配置，每次测试10秒")
-    print("控制信号: Chirp 0.1~5Hz, 幅值±10°")
-    print("PD控制: Kp=50, Kd=5")
+    print(f"将依次测试{len(test_configs)}种配置，每次测试{config['test_signal']['duration']}秒")
+    print(f"控制信号: Chirp {config['test_signal']['f_start']}~{config['test_signal']['f_end']}Hz, 幅值±{config['test_signal']['amplitude']}°")
+    print(f"PD控制: Kp={config['control']['kp']}, Kd={config['control']['kd']}")
+    print(f"力矩限制: ±{config['control']['torque_limit']} Nm")
     print("\n实时显示:")
     print("  - 位置跟踪曲线（期望 vs 实际）")
     print("  - 速度跟踪曲线（期望 vs 实际）")
@@ -376,16 +403,41 @@ def main():
     print("="*60)
     
     # 依次测试
-    for i, config in enumerate([config_1, config_2, config_3], 1):
-        print(f"\n[{i}/3] 准备测试: {config['name']}")
+    results = []
+    for i, test_config in enumerate(test_configs, 1):
+        print(f"\n[{i}/{len(test_configs)}] 准备测试: {test_config['name']}")
         input("按Enter开始...")
-        run_test(
-            config['arm_length'],
-            config['arm_mass'],
-            config['weight_mass'],
-            config['weight_position'],
-            config['name']
+        result = run_test(
+            test_config['arm_length'],
+            test_config['arm_mass'],
+            test_config['weight_mass'],
+            test_config['weight_position'],
+            test_config['name'],
+            config
         )
+        results.append(result)
+    
+    # 显示转动惯量汇总
+    print(f"\n{'='*80}")
+    print("转动惯量汇总对比")
+    print(f"{'='*80}")
+    print(f"{'配置':<12} {'理论计算':<18} {'MuJoCo计算':<18} {'误差%':<10}")
+    print(f"{'-'*80}")
+    
+    for i, result in enumerate(results, 1):
+        config_name = f"配置{i}"
+        theoretical = result['inertia_theoretical']
+        mujoco = result['inertia_mujoco']
+        error = abs(mujoco - theoretical) / theoretical * 100
+        
+        print(f"{config_name:<12} {theoretical:<18.6f} {mujoco:<18.6f} {error:<10.2f}")
+    
+    print(f"{'='*80}")
+    print("说明：")
+    print("- 理论计算：使用平行轴定理手动计算")
+    print("- MuJoCo计算：从质量矩阵M(q)提取")
+    print("- 误差应该很小（<1%），证明计算正确")
+    print(f"{'='*80}")
 
 if __name__ == "__main__":
     try:
