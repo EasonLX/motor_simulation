@@ -8,16 +8,32 @@ arm:
   density: 7850        # 钢的密度 (kg/m³)
 
 # 负载测试范围
-load_masses: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]  # kg
+# load_masses: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]  # kg
+load_masses: [1, 2, 3]  # kg
 
-# 电机参数
+# 电机参数 - 支持多个电机型号对比
+motors:
+  - name: "PA100_18"
+    max_torque: 88.9
+  - name: "PA100"
+    max_torque: 15.54
+  - name: "PA100_v2"
+    max_torque: 50.4
+  - name: "PA100_18_v2"
+    max_torque: 94.5
+  - name: "CK"
+    max_torque: 18.9
+  - name: "CK_v2"
+    max_torque: 18.9
+
+# 默认电机（用于单次测试）
 motor:
   max_torque: 100      # 最大扭矩 (Nm)
 
 # 控制参数
 control:
-  kp: 250.0             # 比例增益
-  kd: 10.0             # 微分增益
+  kp: 80.0             # 比例增益
+  kd: 5             # 微分增益
 
 # 测试信号参数 (按readme要求)
 test_signal:

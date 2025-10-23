@@ -154,6 +154,11 @@ def create_model_xml(arm_length, arm_mass, load_mass):
 
 def chirp_signal(t, f_start, f_end, duration, amplitude_deg):
     """Chirp扫频信号"""
+    """
+    瞬时频率 f(t) = f_start + k*t(线性变化），
+    相位 φ(t) = 2π ∫f(t)dt(积分结果），即 2π*(f_start*t + 0.5*k*t²)
+    np.deg2rad 将振幅从 “度” 转换为 “弧度
+    """
     k = (f_end - f_start) / duration
     phase = 2 * np.pi * (f_start * t + 0.5 * k * t**2)
     return np.deg2rad(amplitude_deg) * np.sin(phase)
@@ -174,6 +179,7 @@ class RealtimePlotter:
         self.vel_des_buffer = deque(maxlen=self.window_size)
         self.vel_act_buffer = deque(maxlen=self.window_size)
         self.torque_cmd_buffer = deque(maxlen=self.window_size)
+        self.torque_frc_buffer = deque(maxlen=self.window_size)  # 执行器实际力矩反馈
         
         # 创建图形
         plt.ion()
@@ -200,19 +206,20 @@ class RealtimePlotter:
         
         # 力矩子图
         self.ax_torque = self.axes[2]
-        self.line_torque, = self.ax_torque.plot([], [], 'm-', label='控制力矩', linewidth=1.5)
+        self.line_torque_cmd, = self.ax_torque.plot([], [], 'r-', label='指令力矩', linewidth=2, alpha=0.8)
+        self.line_torque_frc, = self.ax_torque.plot([], [], 'b-', label='反馈力矩', linewidth=1.5)
         self.ax_torque.set_xlabel('时间 (s)', fontsize=11)
         self.ax_torque.set_ylabel('力矩 (Nm)', fontsize=11)
         self.ax_torque.legend(loc='upper right')
         self.ax_torque.grid(True, alpha=0.3)
-        self.ax_torque.set_title('控制力矩')
+        self.ax_torque.set_title('力矩跟踪 (指令 vs 反馈)')
         
         plt.tight_layout()
         plt.show(block=False)
         
         self.running = True
     
-    def update_data(self, time_val, pos_des, pos_act, vel_des, vel_act, torque_cmd):
+    def update_data(self, time_val, pos_des, pos_act, vel_des, vel_act, torque_cmd, torque_frc):
         """
         更新数据缓冲区
         
@@ -223,6 +230,7 @@ class RealtimePlotter:
             vel_des (float): 期望速度 (rad/s)
             vel_act (float): 实际速度 (rad/s)
             torque_cmd (float): 控制力矩指令 (Nm)
+            torque_frc (float): 执行器实际力矩反馈 (Nm)
         """
         self.time_buffer.append(time_val)
         self.pos_des_buffer.append(pos_des)
@@ -230,6 +238,7 @@ class RealtimePlotter:
         self.vel_des_buffer.append(vel_des)
         self.vel_act_buffer.append(vel_act)
         self.torque_cmd_buffer.append(torque_cmd)
+        self.torque_frc_buffer.append(torque_frc)
     
     def update_plot(self):
         """
@@ -259,8 +268,9 @@ class RealtimePlotter:
         self.ax_vel.relim()
         self.ax_vel.autoscale_view()
         
-        # 更新控制力矩曲线
-        self.line_torque.set_data(time_array, np.array(self.torque_cmd_buffer))
+        # 更新力矩跟踪曲线 (指令 vs 反馈)
+        self.line_torque_cmd.set_data(time_array, np.array(self.torque_cmd_buffer))
+        self.line_torque_frc.set_data(time_array, np.array(self.torque_frc_buffer))
         self.ax_torque.relim()
         self.ax_torque.autoscale_view()
         
@@ -324,7 +334,8 @@ def run_load_test(arm_mass, load_mass, show_plot=True):
     pos_act_data = []
     vel_des_data = []
     vel_act_data = []
-    torque_data = []
+    torque_cmd_data = []  # 指令力矩
+    torque_frc_data = []  # 反馈力矩
     
     # 运行仿真
     with mujoco.viewer.launch_passive(model, data) as viewer:
@@ -343,21 +354,27 @@ def run_load_test(arm_mass, load_mass, show_plot=True):
             
             t = data.time
             
-            # Chirp信号 (按readme要求: 0.1Hz-10Hz, ±10°, 20s)
+            # Chirp信号 (0.1Hz-10Hz, ±10°, 20s)
             pos_des = chirp_signal(t, CHIRP_F_START, CHIRP_F_END, TEST_DURATION, CHIRP_AMPLITUDE)
             
-            # 期望速度指令为0 (按readme要求)
+            # 期望速度指令为0
             vel_des = 0.0
             
             # PD控制：转换为期望力矩 (标准公式)
-            # 标准PD控制公式: torques = p_gains * (actions - dof_pos) - d_gains * dof_vel
-            # 其中: actions=期望位置, dof_pos=实际位置, dof_vel=实际速度
-            pos_error = pos_des - data.qpos[0]  # 位置误差
+            default_joint_pos = 0.0  # MuJoCo中关节默认位置通常为0
+            pos_error = pos_des - data.qpos[0] + default_joint_pos  # 位置误差 (包含默认位置)
             vel_error = vel_des - data.qvel[0]  # 速度误差 (期望速度为0)
-            torque = KP * pos_error - KD * vel_error  # PD控制输出
+            torque = KP * pos_error + KD * vel_error  # PD控制输出
             torque = np.clip(torque, -MOTOR_MAX_TORQUE, MOTOR_MAX_TORQUE)  # 限制在电机扭矩范围内
             
             data.ctrl[0] = torque
+            
+            # 执行仿真步进
+            mujoco.mj_step(model, data)
+            
+            # 获取执行器实际力矩反馈 (actuator_force)
+            # data.actuator_force[0] 包含执行器实际输出的力矩
+            torque_frc = data.actuator_force[0] if model.nu > 0 else 0.0
             
             # 记录数据
             time_data.append(t)
@@ -365,17 +382,17 @@ def run_load_test(arm_mass, load_mass, show_plot=True):
             pos_act_data.append(data.qpos[0])
             vel_des_data.append(vel_des)
             vel_act_data.append(data.qvel[0])
-            torque_data.append(torque)
+            torque_cmd_data.append(torque)  # 指令力矩
+            torque_frc_data.append(torque_frc)  # 反馈力矩
             
             # 更新实时绘图
             if plotter:
-                plotter.update_data(t, pos_des, data.qpos[0], vel_des, data.qvel[0], torque)
+                plotter.update_data(t, pos_des, data.qpos[0], vel_des, data.qvel[0], torque, torque_frc)
                 plot_update_counter += 1
                 if plot_update_counter >= PLOT_UPDATE_INTERVAL:
                     plotter.update_plot()
                     plot_update_counter = 0
             
-            mujoco.mj_step(model, data)
             viewer.sync()
             
             time_until_next = model.opt.timestep - (time.time() - step_start)
@@ -390,11 +407,17 @@ def run_load_test(arm_mass, load_mass, show_plot=True):
     # 计算跟踪误差
     pos_error_array = np.array(pos_des_data) - np.array(pos_act_data)  # 位置跟踪误差
     vel_error_array = np.array(vel_des_data) - np.array(vel_act_data)  # 速度跟踪误差
-    torque_array = np.array(torque_data)  # 控制力矩数组
+    torque_cmd_array = np.array(torque_cmd_data)  # 指令力矩数组
+    torque_frc_array = np.array(torque_frc_data)  # 反馈力矩数组
+    torque_error_array = torque_cmd_array - torque_frc_array  # 力矩跟踪误差
     
     # 计算关键性能指标
-    max_torque = np.max(np.abs(torque_array))  # 最大控制力矩
-    rms_torque = np.sqrt(np.mean(torque_array**2))  # RMS控制力矩
+    max_torque_cmd = np.max(np.abs(torque_cmd_array))  # 最大指令力矩
+    max_torque_frc = np.max(np.abs(torque_frc_array))  # 最大反馈力矩
+    rms_torque_cmd = np.sqrt(np.mean(torque_cmd_array**2))  # RMS指令力矩
+    rms_torque_frc = np.sqrt(np.mean(torque_frc_array**2))  # RMS反馈力矩
+    max_torque_error = np.max(np.abs(torque_error_array))  # 最大力矩误差
+    rms_torque_error = np.sqrt(np.mean(torque_error_array**2))  # RMS力矩误差
     max_pos_error = np.max(np.abs(pos_error_array))  # 最大位置误差
     rms_pos_error = np.sqrt(np.mean(pos_error_array**2))  # RMS位置误差
     
@@ -409,18 +432,18 @@ def run_load_test(arm_mass, load_mass, show_plot=True):
     print(f"  最大速度: {np.max(np.abs(vel_act_data)):.3f} rad/s")
     
     print(f"\n控制力矩:")
-    print(f"  最大力矩: {max_torque:.2f} Nm")
-    print(f"  平均力矩: {np.mean(np.abs(torque_array)):.2f} Nm")
-    print(f"  RMS力矩: {rms_torque:.2f} Nm")
-    print(f"  扭矩利用率: {max_torque/MOTOR_MAX_TORQUE*100:.1f}%")
+    print(f"  指令力矩 - 最大: {max_torque_cmd:.2f} Nm, RMS: {rms_torque_cmd:.2f} Nm")
+    print(f"  反馈力矩 - 最大: {max_torque_frc:.2f} Nm, RMS: {rms_torque_frc:.2f} Nm")
+    print(f"  力矩误差 - 最大: {max_torque_error:.2f} Nm, RMS: {rms_torque_error:.2f} Nm")
+    print(f"  扭矩利用率: {max_torque_cmd/MOTOR_MAX_TORQUE*100:.1f}%")
     
     # ========== 电机驱动能力评估 ==========
     # 根据最大控制力矩判断电机是否能稳定驱动负载
-    if max_torque < MOTOR_MAX_TORQUE * 0.9:  # 扭矩利用率 < 90%
-        print(f"  ✓ 电机能稳定驱动 (扭矩裕度: {(1-max_torque/MOTOR_MAX_TORQUE)*100:.1f}%)")
+    if max_torque_cmd < MOTOR_MAX_TORQUE * 0.9:  # 扭矩利用率 < 90%
+        print(f"  ✓ 电机能稳定驱动 (扭矩裕度: {(1-max_torque_cmd/MOTOR_MAX_TORQUE)*100:.1f}%)")
         status = "OK"  # 安全状态
-    elif max_torque < MOTOR_MAX_TORQUE:  # 90% ≤ 扭矩利用率 < 100%
-        print(f"  ⚠️ 接近极限 (扭矩裕度: {(1-max_torque/MOTOR_MAX_TORQUE)*100:.1f}%)")
+    elif max_torque_cmd < MOTOR_MAX_TORQUE:  # 90% ≤ 扭矩利用率 < 100%
+        print(f"  ⚠️ 接近极限 (扭矩裕度: {(1-max_torque_cmd/MOTOR_MAX_TORQUE)*100:.1f}%)")
         status = "MARGINAL"  # 临界状态
     else:  # 扭矩利用率 ≥ 100%
         print(f"  ✗ 超出电机能力！")
@@ -436,8 +459,11 @@ def run_load_test(arm_mass, load_mass, show_plot=True):
     return {
         'load_mass': load_mass,
         'inertia': inertia,
-        'max_torque': max_torque,
-        'rms_torque': rms_torque,
+        'max_torque': max_torque_cmd,  # 使用指令力矩作为评估依据
+        'max_torque_frc': max_torque_frc,  # 反馈力矩
+        'rms_torque': rms_torque_cmd,
+        'max_torque_error': max_torque_error,  # 力矩跟踪误差
+        'rms_torque_error': rms_torque_error,
         'max_pos_error': max_pos_error,
         'rms_pos_error': rms_pos_error,
         'status': status
@@ -475,7 +501,7 @@ def main():
     print(f"\n控制参数:")
     print(f"  Kp: {KP}, Kd: {KD}")
     
-    print(f"\n测试信号 (按readme要求):")
+    print(f"\n测试信号:")
     print(f"  Chirp {CHIRP_F_START}~{CHIRP_F_END} Hz, 幅值±{CHIRP_AMPLITUDE}°")
     print(f"  持续时间: {TEST_DURATION} 秒")
     print(f"  信号类型: 扫频信号 (0.1Hz→10Hz, 20秒)")
@@ -542,6 +568,73 @@ def main():
         writer.writerows(results)
     
     print(f"\n详细结果已保存至: load_test_results.csv")
+    
+    # ========== 电机型号对比分析 ==========
+    if 'motors' in config:
+        print(f"\n{'='*100}")
+        print("不同电机型号驱动能力对比分析")
+        print(f"{'='*100}")
+        
+        motor_comparison = []
+        
+        for motor_info in config['motors']:
+            motor_name = motor_info['name']
+            motor_max_torque = motor_info['max_torque']
+            
+            # 找到该电机能驱动的最大负载
+            max_load = 0
+            max_load_inertia = 0
+            max_load_torque = 0
+            
+            for result in results:
+                # 判断该负载是否在电机能力范围内（90%安全裕度）
+                if result['max_torque'] < motor_max_torque * 0.9:
+                    if result['load_mass'] > max_load:
+                        max_load = result['load_mass']
+                        max_load_inertia = result['inertia']
+                        max_load_torque = result['max_torque']
+            
+            motor_comparison.append({
+                'motor_name': motor_name,
+                'max_torque': motor_max_torque,
+                'max_safe_load': max_load,
+                'max_inertia': max_load_inertia,
+                'required_torque': max_load_torque,
+                'torque_margin': (motor_max_torque - max_load_torque) / motor_max_torque * 100 if max_load > 0 else 0
+            })
+        
+        # 按最大负载排序
+        motor_comparison.sort(key=lambda x: x['max_safe_load'], reverse=True)
+        
+        # 打印对比表格
+        print(f"{'电机型号':<15} {'峰值扭矩(Nm)':<12} {'最大负载(kg)':<12} {'转动惯量(kg·m²)':<18} {'需求扭矩(Nm)':<14} {'扭矩裕度':<10}")
+        print(f"{'-'*100}")
+        
+        for mc in motor_comparison:
+            if mc['max_safe_load'] > 0:
+                print(f"{mc['motor_name']:<15} "
+                      f"{mc['max_torque']:<12.2f} "
+                      f"{mc['max_safe_load']:<12} "
+                      f"{mc['max_inertia']:<18.6f} "
+                      f"{mc['required_torque']:<14.2f} "
+                      f"{mc['torque_margin']:<10.1f}%")
+            else:
+                print(f"{mc['motor_name']:<15} "
+                      f"{mc['max_torque']:<12.2f} "
+                      f"{'无法驱动':<12} "
+                      f"{'-':<18} "
+                      f"{'-':<14} "
+                      f"{'-':<10}")
+        
+        
+        # 保存电机对比结果
+        with open('motor_comparison.csv', 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.DictWriter(f, fieldnames=['motor_name', 'max_torque', 'max_safe_load', 
+                                                   'max_inertia', 'required_torque', 'torque_margin'])
+            writer.writeheader()
+            writer.writerows(motor_comparison)
+        
+        print(f"\n电机对比结果已保存至: motor_comparison.csv")
 
 
 if __name__ == "__main__":
