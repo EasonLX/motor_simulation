@@ -9,38 +9,61 @@ arm:
 
 # 负载测试范围
 # load_masses: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]  # kg
-load_masses: [1, 2, 3]  # kg
+load_masses: [1,2,3,4,5]  # kg
+
+# 负载参数
+load:
+  density: 7850           # 负载材质密度 (kg/m³)，默认为钢的密度，与摆杆相同
+                          # 半径将根据质量和密度自动计算: r = ∛(3m/(4πρ))
 
 # 电机参数 - 支持多个电机型号对比
+# 每个电机对应一个关节，包含关节名称、控制参数和最大扭矩
 motors:
-  - name: "PA100_18"
-    max_torque: 88.9
+  - name: "PA100_18"           # 电机型号
+    joint_name: "leg_l1_joint"  # 对应关节
+    kp: 60                       # 比例增益
+    kd: 5.0                      # 微分增益
+    max_torque: 88.9            # 最大扭矩 (Nm)
+    
   - name: "PA100"
+    joint_name: "leg_l2_joint"
+    kp: 60
+    kd: 5.0
     max_torque: 15.54
+    
   - name: "PA100_v2"
+    joint_name: "leg_l3_joint"
+    kp: 80
+    kd: 5.0
     max_torque: 50.4
+    
   - name: "PA100_18_v2"
+    joint_name: "leg_l4_joint"
+    kp: 80
+    kd: 6.0
     max_torque: 94.5
+    
   - name: "CK"
+    joint_name: "leg_l5_joint"
+    kp: 15
+    kd: 15.0
     max_torque: 18.9
+    
   - name: "CK_v2"
+    joint_name: "leg_l6_joint"
+    kp: 15
+    kd: 15.0
     max_torque: 18.9
 
-# 默认电机（用于单次测试）
-motor:
-  max_torque: 100      # 最大扭矩 (Nm)
+# 电机选择（设置要测试的电机名称）
+selected_motor: "PA100_18"  # 可选: PA100_18, PA100, PA100_v2, PA100_18_v2, CK, CK_v2
 
-# 控制参数
-control:
-  kp: 80.0             # 比例增益
-  kd: 10             # 微分增益
-
-# 测试信号参数 (按readme要求)
+# 测试信号参数 
 test_signal:
-  duration: 10.0       # 测试时长 (s) - readme要求20s
+  duration: 20.0       # 测试时长 (s) - readme要求20s
   f_start: 0.1         # 起始频率 (Hz) - readme要求0.1Hz
   f_end: 10.0          # 结束频率 (Hz) - readme要求10Hz
-  amplitude: 10.0       # 幅值 (度) - readme要求±10度
+  amplitude: 60.0       # 幅值 (度) - readme要求±10度
 
 # 显示参数
 display:

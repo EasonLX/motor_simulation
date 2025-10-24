@@ -20,6 +20,11 @@
           <inertial pos="0 0 0" mass="1.1097676048805944" 
                     diaginertia="0.00376165 0.00376165 0.00012485"/>
           
+          <body name="load" pos="0.1 0 0">
+            <geom type="sphere" size="0.06724818663754586" rgba="0.8 0.1 0.1 1"/>
+            <inertial pos="0 0 0" mass="10" 
+                      diaginertia="0.01808927 0.01808927 0.01808927"/>
+          </body>
         </body>
       </body>
     </body>

@@ -21,9 +21,9 @@
                     diaginertia="0.00376165 0.00376165 0.00012485"/>
           
           <body name="load" pos="0.1 0 0">
-            <geom type="sphere" size="0.04" rgba="0.8 0.1 0.1 1"/>
+            <geom type="sphere" size="0.0312138432177541" rgba="0.8 0.1 0.1 1"/>
             <inertial pos="0 0 0" mass="1" 
-                      diaginertia="0.00064000 0.00064000 0.00064000"/>
+                      diaginertia="0.00038972 0.00038972 0.00038972"/>
           </body>
         </body>
       </body>
@@ -31,6 +31,6 @@
   </worldbody>
   
   <actuator>
-    <motor name="motor1" joint="joint1" gear="1" ctrllimited="true" ctrlrange="-100 100"/>
+    <motor name="motor1" joint="joint1" gear="1" ctrllimited="true" ctrlrange="-88.9 88.9"/>
   </actuator>
 </mujoco>

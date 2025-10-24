@@ -8,13 +8,7 @@
 2. 使用Chirp扫频信号测试位置跟踪性能
 3. 实时显示位置、速度、力矩跟踪波形
 4. 分析电机扭矩利用率，确定最大安全负载
-5. 支持多电机配置，每个电机有独立的Kp、Kd和max_torque参数
-6. 通过配置文件选择要测试的电机
-
-使用方法：
-1. 在config/test_params.yaml中配置电机参数（包含name, joint_name, kp, kd, max_torque）
-2. 设置selected_motor为要测试的电机名称
-3. 运行脚本，程序会使用选定电机的参数进行负载测试
+5. 生成结构设计部门参考报告
 
 """
 
@@ -53,30 +47,12 @@ ARM_DENSITY = config['arm']['density']      # 摆杆材质密度 (kg/m³)
 # 负载测试范围（包含0kg空载情况）
 LOAD_MASSES = [0] + config['load_masses']   # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] kg
 
-# 获取选定的电机参数
-selected_motor_name = config.get('selected_motor', 'PA100_18')
-motors_list = config.get('motors', [])
+# 电机性能参数
+MOTOR_MAX_TORQUE = config['motor']['max_torque']  # 电机最大扭矩 (Nm)
 
-# 查找选定的电机
-selected_motor = None
-for motor in motors_list:
-    if motor['name'] == selected_motor_name:
-        selected_motor = motor
-        break
-
-if selected_motor is None:
-    print(f"错误：未找到电机 '{selected_motor_name}'，使用默认参数")
-    MOTOR_NAME = "Unknown"
-    MOTOR_JOINT = "unknown_joint"
-    MOTOR_MAX_TORQUE = 100
-    KP = 80.0
-    KD = 10.0
-else:
-    MOTOR_NAME = selected_motor['name']
-    MOTOR_JOINT = selected_motor['joint_name']
-    MOTOR_MAX_TORQUE = selected_motor['max_torque']
-    KP = selected_motor['kp']
-    KD = selected_motor['kd']
+# PD控制器参数
+KP = config['control']['kp']  # 比例增益
+KD = config['control']['kd']  # 微分增益
 
 # 测试信号参数 (按readme要求: Chirp 0.1Hz-10Hz, ±10°, 20s)
 TEST_DURATION = config['test_signal']['duration']      # 测试持续时间 (s)
@@ -87,8 +63,8 @@ CHIRP_AMPLITUDE = config['test_signal']['amplitude']    # 信号幅值 (度)
 # 实时绘图参数
 PLOT_UPDATE_INTERVAL = config['display']['plot_update_interval']  # 绘图更新间隔
 
-# 负载参数（负载半径将根据质量和密度动态计算）
-LOAD_DENSITY = config['load'].get('density', ARM_DENSITY)  # 负载材质密度 (kg/m³)，默认与摆杆相同
+# 负载参数
+LOAD_RADIUS = config['load']['radius']  # 负载球体半径 (m)
 # =================================================
 
 
@@ -112,7 +88,7 @@ def calculate_arm_mass(length, diameter, density):
 
 def create_model_xml(arm_length, arm_mass, load_mass):
     """
-    创建MuJoCo模型XML字符串
+    创建MuJoCo模型XML字符串（不计算diaginertia，让MuJoCo自动计算）
     
     Args:
         arm_length (float): 摆杆长度 (m)
@@ -125,27 +101,14 @@ def create_model_xml(arm_length, arm_mass, load_mass):
     
     radius = ARM_DIAMETER / 2
     
-    # 计算摆杆转动惯量（圆柱体，质心坐标系）
-    # I_xx = I_yy: 绕x/y轴转动惯量（包含长度和半径项）
-    I_xx = (1/12) * arm_mass * arm_length**2 + (1/4) * arm_mass * radius**2
-    I_yy = I_xx  # 圆柱体对称性
-    I_zz = 0.5 * arm_mass * radius**2  # 绕z轴转动惯量（仅半径项）
-    
     # 负载部分（只有当load_mass > 0时才添加）
     load_body = ""
     if load_mass > 0:
-        # 根据质量和密度计算球体半径（实心球体）
-        # 球体体积: V = (4/3)πr³
-        # 质量: m = ρV = ρ(4/3)πr³
-        # 反推半径: r = ∛(3m/(4πρ))
-        load_radius = (3 * load_mass / (4 * np.pi * LOAD_DENSITY)) ** (1/3)
-        
-        I_load = (2/5) * load_mass * load_radius**2  # 球体转动惯量
+        load_radius = LOAD_RADIUS  # 从配置文件读取负载球体半径
         load_body = f'''
           <body name="load" pos="{arm_length/2} 0 0">
             <geom type="sphere" size="{load_radius}" rgba="0.8 0.1 0.1 1"/>
-            <inertial pos="0 0 0" mass="{load_mass}" 
-                      diaginertia="{I_load:.8f} {I_load:.8f} {I_load:.8f}"/>
+            <inertial pos="0 0 0" mass="{load_mass}" diaginertia="0.001 0.001 0.001"/>
           </body>'''
     
     xml = f"""
@@ -167,8 +130,7 @@ def create_model_xml(arm_length, arm_mass, load_mass):
         <body name="arm" pos="{arm_length/2} 0 0.04">
           <geom type="cylinder" size="{radius} {arm_length/2}" 
                 quat="0.707107 0 0.707107 0" rgba="0.1 0.5 0.8 1"/>
-          <inertial pos="0 0 0" mass="{arm_mass}" 
-                    diaginertia="{I_xx:.8f} {I_yy:.8f} {I_zz:.8f}"/>
+          <inertial pos="0 0 0" mass="{arm_mass}" diaginertia="0.001 0.001 0.0001"/>
           {load_body}
         </body>
       </body>
@@ -371,7 +333,7 @@ def run_load_test(arm_mass, load_mass, show_plot=True):
     xml_string = create_model_xml(ARM_LENGTH, arm_mass, load_mass)
     
     # 保存XML文件到mjcf目录
-    xml_filename = f'load_test_{load_mass}kg.xml' if load_mass > 0 else 'load_test_0kg_empty.xml'
+    xml_filename = f'load_test_no_dia_{load_mass}kg.xml' if load_mass > 0 else 'load_test_no_dia_0kg_empty.xml'
     xml_path = os.path.join(os.path.dirname(__file__), '..', 'mjcf', xml_filename)
     with open(xml_path, 'w', encoding='utf-8') as f:
         f.write(xml_string)
@@ -512,10 +474,10 @@ def run_load_test(arm_mass, load_mass, show_plot=True):
     # ========== 电机驱动能力评估 ==========
     # 根据最大控制力矩判断电机是否能稳定驱动负载
     if max_torque_cmd < MOTOR_MAX_TORQUE * 0.9:  # 扭矩利用率 < 90%
-        print(f"  ✓ 电机能稳定驱动")
+        print(f"  ✓ 电机能稳定驱动 (扭矩裕度: {(1-max_torque_cmd/MOTOR_MAX_TORQUE)*100:.1f}%)")
         status = "OK"  # 安全状态
     elif max_torque_cmd < MOTOR_MAX_TORQUE:  # 90% ≤ 扭矩利用率 < 100%
-        print(f"  ⚠️ 接近极限")
+        print(f"  ⚠️ 接近极限 (扭矩裕度: {(1-max_torque_cmd/MOTOR_MAX_TORQUE)*100:.1f}%)")
         status = "MARGINAL"  # 临界状态
     else:  # 扭矩利用率 ≥ 100%
         print(f"  ✗ 超出电机能力！")
@@ -556,7 +518,7 @@ def main():
     """
     
     print("="*70)
-    print("摆杆负载测试 - 验证电机驱动能力")
+    print("摆杆负载测试 - 验证电机驱动能力 (MuJoCo自动计算惯量)")
     print("="*70)
     print(f"摆杆参数:")
     print(f"  长度: {ARM_LENGTH} m")
@@ -567,11 +529,11 @@ def main():
     arm_mass = calculate_arm_mass(ARM_LENGTH, ARM_DIAMETER, ARM_DENSITY)
     print(f"  质量: {arm_mass:.3f} kg")
     
-    print(f"\n测试电机:")
-    print(f"  电机型号: {MOTOR_NAME}")
-    print(f"  对应关节: {MOTOR_JOINT}")
+    print(f"\n电机参数:")
     print(f"  最大扭矩: {MOTOR_MAX_TORQUE} Nm")
-    print(f"  控制参数: Kp={KP}, Kd={KD}")
+    
+    print(f"\n控制参数:")
+    print(f"  Kp: {KP}, Kd: {KD}")
     
     print(f"\n测试信号:")
     print(f"  Chirp {CHIRP_F_START}~{CHIRP_F_END} Hz, 幅值±{CHIRP_AMPLITUDE}°")
@@ -595,15 +557,6 @@ def main():
     print(f"\n{'='*90}")
     print("测试汇总报告 - 给结构设计部门参考")
     print(f"{'='*90}")
-    
-    # 显示当前测试电机参数
-    print(f"当前测试电机参数:")
-    print(f"  电机型号: {MOTOR_NAME}")
-    print(f"  对应关节: {MOTOR_JOINT}")
-    print(f"  最大扭矩: {MOTOR_MAX_TORQUE} Nm")
-    print(f"  控制参数: Kp={KP}, Kd={KD}")
-    print(f"{'='*90}")
-    
     print(f"{'负载(kg)':<10} {'转动惯量(kg·m²)':<18} {'最大扭矩(Nm)':<15} {'扭矩利用率':<12} {'状态':<10}")
     print(f"{'-'*90}")
     
@@ -616,16 +569,11 @@ def main():
         
         load_str = "空载" if result['load_mass'] == 0 else str(result['load_mass'])
         
-        # print(f"{load_str:<10} "
-        #       f"{result['inertia']:<18.6f} "
-        #       f"{result['max_torque']:<15.2f} "
-        #       f"{result['max_torque']/MOTOR_MAX_TORQUE*100:<12.1f}% "
-        #       f"{status_symbol:<10}")
-        print(f"{load_str:<12} "  # 从10→12（增加2）
-              f"{result['inertia']:<21.6f} "  # 从18→21（增加3）
-              f"{result['max_torque']:<18.2f} "  # 从15→18（增加3）
-              f"{result['max_torque']/MOTOR_MAX_TORQUE*100:<15.1f}% "  # 从12→15（增加3）
-              f"{status_symbol:<12}")  # 从10→12（增加2）
+        print(f"{load_str:<10} "
+              f"{result['inertia']:<18.6f} "
+              f"{result['max_torque']:<15.2f} "
+              f"{result['max_torque']/MOTOR_MAX_TORQUE*100:<12.1f}% "
+              f"{status_symbol:<10}")
     
     # 确定最大可用负载
     ok_results = [r for r in results if r['status'] == 'OK']
@@ -647,77 +595,81 @@ def main():
     
     # 保存结果
     import csv
-    with open('load_test_results.csv', 'w', newline='', encoding='utf-8-sig') as f:
+    with open('load_test_no_dia_results.csv', 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.DictWriter(f, fieldnames=['load_mass', 'inertia', 'max_torque', 'max_torque_frc',
                                                'rms_torque', 'max_torque_error', 'rms_torque_error',
                                                'max_pos_error', 'rms_pos_error', 'status'])
         writer.writeheader()
         writer.writerows(results)
     
-    print(f"\n详细结果已保存至: load_test_results.csv")
+    print(f"\n详细结果已保存至: load_test_no_dia_results.csv")
     
-    # # ========== 电机型号对比分析 ==========
-    # if 'motors' in config:
-    #     print(f"\n{'='*100}")
-    #     print("不同电机型号驱动能力对比分析")
-    #     print(f"{'='*100}")
+    # ========== 电机型号对比分析 ==========
+    if 'motors' in config:
+        print(f"\n{'='*100}")
+        print("不同电机型号驱动能力对比分析")
+        print(f"{'='*100}")
         
-    #     motor_comparison = []
+        motor_comparison = []
         
-    #     for motor_info in config['motors']:
-    #         motor_name = motor_info['name']
-    #         motor_max_torque = motor_info['max_torque']
+        for motor_info in config['motors']:
+            motor_name = motor_info['name']
+            motor_max_torque = motor_info['max_torque']
             
-    #         # 找到该电机能驱动的最大负载
-    #         max_load = 0
-    #         max_load_inertia = 0
-    #         max_load_torque = 0
+            # 找到该电机能驱动的最大负载
+            max_load = 0
+            max_load_inertia = 0
+            max_load_torque = 0
             
-    #         for result in results:
-    #             # 判断该负载是否在电机能力范围内（90%安全裕度）
-    #             if result['max_torque'] < motor_max_torque * 0.9:
-    #                 if result['load_mass'] > max_load:
-    #                     max_load = result['load_mass']
-    #                     max_load_inertia = result['inertia']
-    #                     max_load_torque = result['max_torque']
+            for result in results:
+                # 判断该负载是否在电机能力范围内（90%安全裕度）
+                if result['max_torque'] < motor_max_torque * 0.9:
+                    if result['load_mass'] > max_load:
+                        max_load = result['load_mass']
+                        max_load_inertia = result['inertia']
+                        max_load_torque = result['max_torque']
             
-    #         motor_comparison.append({
-    #             'motor_name': motor_name,
-    #             'max_torque': motor_max_torque,
-    #             'max_safe_load': max_load,
-    #             'max_inertia': max_load_inertia,
-    #             'required_torque': max_load_torque
-    #         })
+            motor_comparison.append({
+                'motor_name': motor_name,
+                'max_torque': motor_max_torque,
+                'max_safe_load': max_load,
+                'max_inertia': max_load_inertia,
+                'required_torque': max_load_torque,
+                'torque_margin': (motor_max_torque - max_load_torque) / motor_max_torque * 100 if max_load > 0 else 0
+            })
         
-    #     # 按最大负载排序
-    #     motor_comparison.sort(key=lambda x: x['max_safe_load'], reverse=True)
+        # 按最大负载排序
+        motor_comparison.sort(key=lambda x: x['max_safe_load'], reverse=True)
         
-    #     # 打印对比表格
-    #     print(f"{'电机型号':<15} {'峰值扭矩(Nm)':<12} {'最大负载(kg)':<12} {'转动惯量(kg·m²)':<18} {'需求扭矩(Nm)':<14}")
-    #     print(f"{'-'*90}")
+        # 打印对比表格
+        print(f"{'电机型号':<15} {'峰值扭矩(Nm)':<12} {'最大负载(kg)':<12} {'转动惯量(kg·m²)':<18} {'需求扭矩(Nm)':<14} {'扭矩裕度':<10}")
+        print(f"{'-'*100}")
         
-    #     for mc in motor_comparison:
-    #         if mc['max_safe_load'] > 0:
-    #             print(f"{mc['motor_name']:<20} "  # 从15→20
-    #                 f"{mc['max_torque']:<16.2f} "  # 从12→16
-    #                 f"{mc['max_safe_load']:<16} "  # 从12→16
-    #                 f"{mc['max_inertia']:<24.6f} "  # 从18→24
-    #                 f"{mc['required_torque']:<20.2f}")  # 从14→20
-    #         else:
-    #             print(f"{mc['motor_name']:<20} "
-    #                 f"{mc['max_torque']:<16.2f} "
-    #                 f"{'无法驱动':<16} "
-    #                 f"{'-':<24} "
-    #                 f"{'-':<20}")
+        for mc in motor_comparison:
+            if mc['max_safe_load'] > 0:
+                print(f"{mc['motor_name']:<15} "
+                      f"{mc['max_torque']:<12.2f} "
+                      f"{mc['max_safe_load']:<12} "
+                      f"{mc['max_inertia']:<18.6f} "
+                      f"{mc['required_torque']:<14.2f} "
+                      f"{mc['torque_margin']:<10.1f}%")
+            else:
+                print(f"{mc['motor_name']:<15} "
+                      f"{mc['max_torque']:<12.2f} "
+                      f"{'无法驱动':<12} "
+                      f"{'-':<18} "
+                      f"{'-':<14} "
+                      f"{'-':<10}")
         
-    #     # 保存电机对比结果
-    #     with open('motor_comparison.csv', 'w', newline='', encoding='utf-8-sig') as f:
-    #         writer = csv.DictWriter(f, fieldnames=['motor_name', 'max_torque', 'max_safe_load', 
-    #                                                'max_inertia', 'required_torque'])
-    #         writer.writeheader()
-    #         writer.writerows(motor_comparison)
         
-    #     print(f"\n电机对比结果已保存至: motor_comparison.csv")
+        # 保存电机对比结果
+        with open('motor_comparison_no_dia.csv', 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.DictWriter(f, fieldnames=['motor_name', 'max_torque', 'max_safe_load', 
+                                                   'max_inertia', 'required_torque', 'torque_margin'])
+            writer.writeheader()
+            writer.writerows(motor_comparison)
+        
+        print(f"\n电机对比结果已保存至: motor_comparison_no_dia.csv")
 
 
 if __name__ == "__main__":
