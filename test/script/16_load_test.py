@@ -126,10 +126,13 @@ def create_model_xml(arm_length, arm_mass, load_mass):
     radius = ARM_DIAMETER / 2
     
     # 计算摆杆转动惯量（圆柱体，质心坐标系）
-    # I_xx = I_yy: 绕x/y轴转动惯量（包含长度和半径项）
-    I_xx = (1/12) * arm_mass * arm_length**2 + (1/4) * arm_mass * radius**2
-    I_yy = I_xx  # 圆柱体对称性
-    I_zz = 0.5 * arm_mass * radius**2  # 绕z轴转动惯量（仅半径项）
+    # 注意：圆柱体通过quat="0.707107 0 0.707107 0"旋转了90度（绕y轴）
+    # 旋转后：圆柱体轴线沿x轴方向
+    # I_xx: 绕x轴（圆柱体轴线），仅与半径相关
+    I_xx = 0.5 * arm_mass * radius**2
+    # I_yy = I_zz: 绕垂直于轴线的轴，包含长度和半径项
+    I_yy = (1/12) * arm_mass * arm_length**2 + (1/4) * arm_mass * radius**2
+    I_zz = I_yy  # 圆柱体对称性
     
     # 负载部分（只有当load_mass > 0时才添加）
     load_body = ""
@@ -627,12 +630,15 @@ def main():
               f"{result['max_torque']/MOTOR_MAX_TORQUE*100:<15.1f}% "  # 从12→15（增加3）
               f"{status_symbol:<12}")  # 从10→12（增加2）
     
-    # 确定最大可用负载
-    ok_results = [r for r in results if r['status'] == 'OK']
-    if ok_results:
-        max_safe_load = max([r['load_mass'] for r in ok_results])
-        min_inertia = min([r['inertia'] for r in ok_results])
-        max_inertia = max([r['inertia'] for r in ok_results])
+    # 确定最大可用负载（包含OK和MARGINAL状态）
+    acceptable_results = [r for r in results if r['status'] in ['OK', 'MARGINAL']]
+    if acceptable_results:
+        max_safe_load = max([r['load_mass'] for r in acceptable_results])
+        
+        # 计算所有可接受结果的转动惯量范围
+        inertias_acceptable = [r['inertia'] for r in acceptable_results]
+        min_inertia = min(inertias_acceptable)
+        max_inertia = max(inertias_acceptable)
         
         print(f"\n{'='*90}")
         print(f"结论:")

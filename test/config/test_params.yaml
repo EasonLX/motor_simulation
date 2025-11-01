@@ -4,12 +4,12 @@
 # 摆杆参数
 arm:
   length: 0.2          # 杆长 (m)
-  diameter: 0.03       # 直径 (m) 
+  diameter: 0.02       # 直径 (m) 
   density: 7850        # 钢的密度 (kg/m³)
 
 # 负载测试范围
-# load_masses: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]  # kg
-load_masses: [1,2,3,4,5]  # kg
+load_masses: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]  # kg
+# load_masses: [1]  # kg
 
 # 负载参数
 load:
@@ -23,40 +23,40 @@ motors:
     joint_name: "leg_l1_joint"  # 对应关节
     kp: 60                       # 比例增益
     kd: 5.0                      # 微分增益
-    max_torque: 88.9            # 最大扭矩 (Nm)
+    max_torque: 80            # 最大扭矩 (Nm)
     
   - name: "PA100"
     joint_name: "leg_l2_joint"
     kp: 60
     kd: 5.0
-    max_torque: 15.54
+    max_torque: 80
     
   - name: "PA100_v2"
     joint_name: "leg_l3_joint"
     kp: 80
     kd: 5.0
-    max_torque: 50.4
+    max_torque: 80
     
   - name: "PA100_18_v2"
     joint_name: "leg_l4_joint"
     kp: 80
     kd: 6.0
-    max_torque: 94.5
+    max_torque: 80
     
   - name: "CK"
     joint_name: "leg_l5_joint"
     kp: 15
-    kd: 15.0
-    max_torque: 18.9
+    kd: 1.0
+    max_torque: 30
     
-  - name: "CK_v2"
+  - name: "CK_2"
     joint_name: "leg_l6_joint"
     kp: 15
     kd: 15.0
-    max_torque: 18.9
+    max_torque: 30
 
 # 电机选择（设置要测试的电机名称）
-selected_motor: "PA100_18"  # 可选: PA100_18, PA100, PA100_v2, PA100_18_v2, CK, CK_v2
+selected_motor: "CK"  # 可选: PA100_18, PA100, PA100_v2, PA100_18_v2, CK, CK_2
 
 # 测试信号参数 
 test_signal:

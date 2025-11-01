@@ -15,10 +15,10 @@
         <inertial pos="0 0 0" mass="0.5" diaginertia="0.001 0.001 0.0001"/>
         
         <body name="arm" pos="0.1 0 0.04">
-          <geom type="cylinder" size="0.015 0.1" 
+          <geom type="cylinder" size="0.01 0.1" 
                 quat="0.707107 0 0.707107 0" rgba="0.1 0.5 0.8 1"/>
-          <inertial pos="0 0 0" mass="1.1097676048805944" 
-                    diaginertia="0.00376165 0.00376165 0.00012485"/>
+          <inertial pos="0 0 0" mass="0.4932300466135976" 
+                    diaginertia="0.00002466 0.00165643 0.00165643"/>
           
           <body name="load" pos="0.1 0 0">
             <geom type="sphere" size="0.0312138432177541" rgba="0.8 0.1 0.1 1"/>
@@ -31,6 +31,6 @@
   </worldbody>
   
   <actuator>
-    <motor name="motor1" joint="joint1" gear="1" ctrllimited="true" ctrlrange="-88.9 88.9"/>
+    <motor name="motor1" joint="joint1" gear="1" ctrllimited="true" ctrlrange="-30 30"/>
   </actuator>
 </mujoco>
